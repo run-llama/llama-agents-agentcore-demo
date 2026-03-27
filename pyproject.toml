@@ -1,0 +1,16 @@
+[project]
+name = "agentcore-deploy-demo"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "llama-index-workflows>=0.1.0",
+    "llama-agents-agentcore[deploy]>=0.7.0",
+    "python-dotenv>=1.0.0",
+]
+
+[tool.llamadeploy]
+name = "agentcore-deploy-demo"
+app = "simple_workflow:app"
+
+[tool.llamadeploy.workflows]
+simple = "simple_workflow:app"
