@@ -147,7 +147,21 @@ Resources:
                   - logs:CreateLogGroup
                   - logs:CreateLogStream
                   - logs:PutLogEvents
-                Resource: arn:aws:logs:*:*:log-group:/aws/bedrock-agentcore/*
+                  - logs:DescribeLogGroups
+                Resource:
+                  - arn:aws:logs:*:*:log-group:/aws/bedrock-agentcore/*
+                  - arn:aws:logs:*:*:log-group:otel-rt-logs*
+                  - arn:aws:logs:*:*:log-group:otel-rt-logs*:*
+
+              # S3: Log delivery
+              - Sid: S3LogDelivery
+                Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetBucketLocation
+                Resource:
+                  - arn:aws:s3:::llamactl-agentcore-*
+                  - arn:aws:s3:::llamactl-agentcore-*/*
 
 Outputs:
   DeployRoleArn:

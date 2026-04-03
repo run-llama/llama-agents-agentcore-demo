@@ -40,8 +40,9 @@ def _load_metadata() -> DeployedRuntime:
 
 def cmd_deploy(args: argparse.Namespace) -> None:
     """Build, push, and deploy the workflow to AgentCore."""
+    session = boto3.Session(region_name=args.region, profile_name=args.profile)
     deployer = AgentCoreDeployer(
-        session=boto3.Session(region_name=args.region),
+        session=session,
         deployment_role=args.deployment_role,
         execution_role=args.execution_role,
     )
@@ -59,24 +60,27 @@ def cmd_invoke(args: argparse.Namespace) -> None:
     """Invoke the deployed workflow."""
     meta = _load_metadata()
     deployer = AgentCoreDeployer(
-        session=boto3.Session(region_name=meta.region),
+        session=boto3.Session(region_name=meta.region, profile_name=args.profile),
         deployment_role="",  # not needed for invoke
         execution_role="",
     )
 
-    payload = {"input": args.prompt}
+    payload = json.loads(args.prompt)
     if args.workflow:
         payload["workflow"] = args.workflow
 
-    result = deployer.invoke(meta.arn, payload)
+    result = deployer.invoke(meta.arn, payload, session_id=args.session_id)
     print(json.dumps(result, indent=2))
+    if "session_id" in result:
+        print(f"\nSession ID: {result['session_id']}")
+        print("  Re-use with: --session-id", result["session_id"])
 
 
 def cmd_destroy(args: argparse.Namespace) -> None:
     """Tear down the deployment and clean up AWS resources."""
     meta = _load_metadata()
     deployer = AgentCoreDeployer(
-        session=boto3.Session(region_name=meta.region),
+        session=boto3.Session(region_name=meta.region, profile_name=args.profile),
         deployment_role="",  # not needed for destroy
         execution_role="",
     )
@@ -101,12 +105,16 @@ def main() -> None:
     deploy_p.add_argument("--deployment-role", required=True, help="IAM role ARN for CodeBuild")
     deploy_p.add_argument("--execution-role", required=True, help="IAM role ARN for AgentCore Runtime")
     deploy_p.add_argument("--region", default="us-east-1", help="AWS region")
+    deploy_p.add_argument("--profile", default=None, help="AWS CLI profile name (e.g. 'dev')")
 
     invoke_p = sub.add_parser("invoke", help="Invoke deployed workflow")
     invoke_p.add_argument("prompt", help="Input prompt")
     invoke_p.add_argument("--workflow", help="Specific workflow name")
+    invoke_p.add_argument("--session-id", default=None, help="Session ID to continue a previous session")
+    invoke_p.add_argument("--profile", default=None, help="AWS CLI profile name")
 
-    sub.add_parser("destroy", help="Destroy deployment and clean up")
+    destroy_p = sub.add_parser("destroy", help="Destroy deployment and clean up")
+    destroy_p.add_argument("--profile", default=None, help="AWS CLI profile name")
 
     args = parser.parse_args()
     {"deploy": cmd_deploy, "invoke": cmd_invoke, "destroy": cmd_destroy}[args.command](args)

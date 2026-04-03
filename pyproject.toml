@@ -4,13 +4,15 @@ version = "0.1.0"
 requires-python = ">=3.10"
 dependencies = [
     "llama-index-workflows>=0.1.0",
-    "llama-agents-agentcore[deploy]>=0.7.0",
+    "llama-agents-agentcore>=0.8.0",
     "python-dotenv>=1.0.0",
+    "llama-cloud>=2.1",
+    "aioboto3>=13.0.0",
+    "pydantic>=2.0",
 ]
 
 [tool.llamadeploy]
 name = "agentcore-deploy-demo"
-app = "simple_workflow:app"
 
 [tool.llamadeploy.workflows]
-simple = "simple_workflow:app"
+kyc = "workflow:workflow"
