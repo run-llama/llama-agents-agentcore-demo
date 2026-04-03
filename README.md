@@ -1,17 +1,22 @@
-# Deploying LlamaIndex Workflows to AWS Bedrock AgentCore
+# Deploying a KYC Verification Workflow to AWS Bedrock AgentCore
 
 This demo shows how to deploy a LlamaIndex Workflow to AWS Bedrock AgentCore
 Runtime using the `llama-agents-agentcore` package, with full WorkflowServer
 capabilities exposed through a single AgentCore entrypoint.
 
+The example workflow performs **KYC (Know Your Customer) document verification**:
+it extracts structured data from three identity documents in parallel using
+LlamaParse, then cross-validates names and addresses with Claude via Bedrock.
+
 ## What This Contains
 
 | File | Description |
 |------|-------------|
-| `workflow.py` | A minimal LlamaIndex Workflow that gets deployed |
-| `deploy.py` | Thin CLI wrapper around `AgentCoreDeployer` — build, invoke, destroy |
+| `workflow.py` | KYC verification workflow — LlamaParse extraction + Claude cross-validation |
+| `deploy.py` | Thin CLI wrapper around `AgentCoreDeployer` — deploy, invoke, destroy |
 | `customer-iam-role.yaml` | CloudFormation template for the required IAM roles |
 | `pyproject.toml` | Project dependencies and workflow registration |
+| `sample_docs/` | Sample KYC documents for local testing (driver's license, utility bill, bank statement) |
 
 ## Architecture
 
@@ -19,8 +24,8 @@ capabilities exposed through a single AgentCore entrypoint.
 ┌─────────────────────────────────────────────────────────────────────┐
 │  Client (boto3 invoke_agent_runtime)                                │
 │                                                                     │
-│  payload = {"action": "run", "workflow": "simple",                  │
-│             "start_event": {"input": "Hello"}}                      │
+│  payload = {"action": "run", "workflow": "kyc",                     │
+│             "start_event": {"documents": [...]}}                    │
 └──────────────────────────┬──────────────────────────────────────────┘
                            │
                            ▼
@@ -37,7 +42,11 @@ capabilities exposed through a single AgentCore entrypoint.
 │         │   └─ handlers, events, ticks, context state               │
 │         │                                                           │
 │         └─ Registered Workflows                                     │
-│              └─ simple_workflow.py → SimpleWorkflow                  │
+│              └─ workflow.py → KYCWorkflow                            │
+│                   ├─ start (fan-out 3 ExtractDocEvents)             │
+│                   ├─ extract_document ×3 (LlamaParse)               │
+│                   ├─ validate_documents (Claude via Bedrock)        │
+│                   └─ finalize → StopEvent with KYC decision         │
 │                                                                     │
 │  /mnt/workspace/  ← AgentCore session storage (survives stop/resume)│
 │    └─ workflows.db                                                  │
@@ -116,8 +125,9 @@ The lifecycle:
 1. **AWS credentials** configured (`aws configure`)
 2. **IAM roles** created in the target account (see `customer-iam-role.yaml`):
    - **Deployment Role** — used by CodeBuild to build/push containers to ECR
-   - **Execution Role** — used by the AgentCore Runtime at runtime
-3. **Python 3.12+**
+   - **Execution Role** — used by the AgentCore Runtime at runtime (needs `bedrock:InvokeModel*` for Claude)
+3. **LlamaCloud API key** — set `LLAMA_CLOUD_API_KEY` (used by LlamaParse for document extraction)
+4. **Python 3.10+**
 
 ## Quick Start
 
@@ -131,8 +141,8 @@ python deploy.py deploy \
   --execution-role arn:aws:iam::123456789012:role/AgentCoreExecutionRole \
   --region us-east-1
 
-# Invoke the deployed workflow
-python deploy.py invoke "Hello, world!"
+# Invoke the deployed KYC workflow (payload is JSON)
+python deploy.py invoke '{"action": "run", "workflow": "kyc", "start_event": {"documents": [...]}}'
 
 # Clean up
 python deploy.py destroy
@@ -143,17 +153,37 @@ python deploy.py destroy
 All examples use `context.session_id` as the implicit handler_id — no need to
 pass `handler_id` explicitly.
 
-### Run synchronously (default)
+### Run KYC verification synchronously
+
+Each document in the `documents` array requires `file_b64` (base64-encoded file
+content), `file_name`, and `doc_type` (`government_id`, `utility_bill`, or
+`bank_statement`).
 
 ```python
-# Client side (boto3)
+import base64, json
+from pathlib import Path
+
+# Encode documents
+def encode_doc(path, doc_type):
+    return {
+        "file_b64": base64.b64encode(Path(path).read_bytes()).decode(),
+        "file_name": Path(path).name,
+        "doc_type": doc_type,
+    }
+
+documents = [
+    encode_doc("drivers_license.pdf", "government_id"),
+    encode_doc("utility_bill.pdf", "utility_bill"),
+    encode_doc("bank_statement.pdf", "bank_statement"),
+]
+
 resp = client.invoke_agent_runtime(
     agentRuntimeArn=arn,
     runtimeSessionId="sess-001",
     payload=json.dumps({
         "action": "run",
-        "workflow": "simple",
-        "start_event": {"input": "Alice"},
+        "workflow": "kyc",
+        "start_event": {"documents": documents},
     }),
 )
 ```
@@ -163,10 +193,26 @@ Response:
 {
   "handler_id": "sess-001",
   "session_id": "sess-001",
-  "workflow_name": "simple",
+  "workflow_name": "kyc",
   "status": "completed",
   "result": {
-    "value": {"greeting": "Hello, Alice!", "original_input": "Alice"},
+    "value": {
+      "decision": "PASS",
+      "decision_reasoning": "All name and address checks passed across all three documents.",
+      "checks": [
+        {
+          "check_name": "Name Match: ID vs Utility Bill",
+          "doc_a_label": "Government ID",
+          "doc_a_value": "ANDREW SAMPLE",
+          "doc_b_label": "Utility Bill",
+          "doc_b_value": "Andrew Sample",
+          "passed": true,
+          "reasoning": "Names match (case-insensitive).",
+          "check_type": "name"
+        }
+      ],
+      "extraction_results": { "..." : "..." }
+    },
     "type": "StopEvent"
   }
 }
@@ -178,7 +224,11 @@ Re-invoking the same session returns the cached result instantly.
 
 ```python
 # Start (returns immediately)
-invoke(session="sess-002", payload={"action": "run_nowait", "workflow": "simple", "start_event": {"input": "Bob"}})
+invoke(session="sess-002", payload={
+    "action": "run_nowait",
+    "workflow": "kyc",
+    "start_event": {"documents": documents},
+})
 
 # Poll (handler_id defaults to session_id)
 invoke(session="sess-002", payload={"action": "get_result"})
@@ -188,13 +238,19 @@ invoke(session="sess-002", payload={"action": "get_result"})
 
 ```python
 # Start a review workflow
-invoke(session="sess-003", payload={"action": "run_nowait", "workflow": "review", "start_event": {"document": "..."}})
+invoke(session="sess-003", payload={
+    "action": "run_nowait",
+    "workflow": "review",
+    "start_event": {"document": "..."},
+})
 
 # Send approval event (handler_id = session_id automatically)
 invoke(session="sess-003", payload={
     "action": "send_event",
-    "event": {"value": {"feedback": "Approved", "approved": True},
-              "qualified_name": "my_module.HumanFeedbackEvent"},
+    "event": {
+        "value": {"feedback": "Approved", "approved": True},
+        "qualified_name": "my_module.HumanFeedbackEvent",
+    },
 })
 ```
 
@@ -231,6 +287,18 @@ invoke(session="sess-004", payload={
     "start_event": {"file_id": "doc-123"},
 })
 ```
+
+## Local Testing
+
+You can run the KYC workflow locally without deploying to AgentCore:
+
+```bash
+# Requires LLAMA_CLOUD_API_KEY and AWS credentials (for Bedrock)
+python workflow.py
+```
+
+This uses the sample documents in `sample_docs/` and prints the KYC decision
+with all cross-document checks.
 
 ## Session Storage Configuration
 
@@ -275,7 +343,11 @@ deployer = AgentCoreDeployer(
 runtime = deployer.deploy(project_dir=".")
 
 # Invoke
-result = deployer.invoke(runtime.arn, {"input": "Hello!"})
+result = deployer.invoke(runtime.arn, {
+    "action": "run",
+    "workflow": "kyc",
+    "start_event": {"documents": [...]},
+})
 print(result)
 
 # Tear down
@@ -289,4 +361,4 @@ deployer.destroy_from_metadata(runtime)
 | `agentcore_deployer.py` | AWS orchestration (CodeBuild, ECR, Runtime) | `AgentCoreDeployer` class |
 | `agentcore_deploy.py` | Temporal activity (role assumption, workspace) | `deploy.py` CLI |
 | `llama-agents-agentcore` | Container entrypoint (workflow discovery) | `agentcore_entrypoint.py` |
-| User's coder session code | The workflow being deployed | `simple_workflow.py` |
+| User's coder session code | The workflow being deployed | `workflow.py` |
