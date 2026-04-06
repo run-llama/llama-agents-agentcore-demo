@@ -14,7 +14,11 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import logging
 from typing import Literal
+
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
 
 import aioboto3
 from llama_cloud import AsyncLlamaCloud
@@ -176,9 +180,11 @@ async def _extract_document(
     label: str = "",
 ) -> tuple[dict, dict]:
     """Upload a document, extract with schema, return (result_dict, metadata_dict)."""
+    logger.info(f"[{label}] Uploading file '{file_name}' to LlamaCloud...")
     file_obj = await client.files.create(
         file=(file_name, file_data), purpose="extract"
     )
+    logger.info(f"[{label}] File uploaded (id={file_obj.id}). Starting extraction...")
 
     job = await client.extract.create(
         file_input=file_obj.id,
@@ -190,10 +196,14 @@ async def _extract_document(
         },
     )
 
+    poll_count = 0
     while job.status not in ("COMPLETED", "FAILED", "CANCELLED"):
+        poll_count += 1
+        logger.info(f"[{label}] Polling extraction job (attempt {poll_count}, status={job.status})...")
         await asyncio.sleep(3)
         job = await client.extract.get(job.id, expand=["extract_metadata"])
 
+    logger.info(f"[{label}] Extraction finished with status={job.status}")
     if job.status != "COMPLETED":
         raise RuntimeError(f"Extraction failed for {label}: {job.status}")
 
@@ -227,6 +237,8 @@ async def _validate_documents_with_llm(
 ) -> KYCDecision:
     """Use Claude via Bedrock Converse to compare identity fields across documents."""
     session = aioboto3.Session()
+
+    logger.info("Starting cross-document validation with Claude via Bedrock...")
 
     prompt = f"""You are a KYC compliance analyst. Compare the extracted data from three
 identity documents submitted by an applicant. For each pair of documents, check whether
@@ -277,6 +289,7 @@ Then decide:
             },
         )
 
+    logger.info("Received Bedrock response, parsing KYC decision...")
     # Extract the tool use input from the response
     for block in response["output"]["message"]["content"]:
         if "toolUse" in block and block["toolUse"]["name"] == tool_name:
@@ -312,17 +325,21 @@ class KYCWorkflow(Workflow):
         Expected StartEvent fields:
             documents: list[dict] - each with file_b64, file_name, and doc_type
         """
+        logger.info("=== KYC Workflow START ===")
         raw_docs = ev.get("documents")
         if not raw_docs:
             raise ValueError("Must provide 'documents' list in StartEvent")
 
         documents = [KYCDocument.model_validate(d) for d in raw_docs]
 
+        logger.info(f"Validated {len(documents)} documents: {[d.doc_type for d in documents]}")
+
         provided_types = {d.doc_type for d in documents}
         missing = REQUIRED_DOC_TYPES - provided_types
         if missing:
             raise ValueError(f"Missing required document types: {missing}")
 
+        logger.info("Fanning out extraction requests for all documents...")
         for doc in documents:
             label = DOC_TYPE_LABELS[doc.doc_type]
             file_bytes = base64.b64decode(doc.file_b64)
@@ -337,6 +354,7 @@ class KYCWorkflow(Workflow):
         self, ctx: Context, ev: ExtractDocEvent
     ) -> ExtractionDoneEvent:
         """Extract structured data from a single document using LlamaParse."""
+        logger.info(f"[{ev.doc_label}] Starting extraction for '{ev.file_name}'...")
         schema_class = DOC_SCHEMAS[ev.doc_label]
         client = AsyncLlamaCloud()
 
@@ -344,6 +362,7 @@ class KYCWorkflow(Workflow):
             client, ev.file_data, ev.file_name, schema_class, ev.doc_label
         )
 
+        logger.info(f"[{ev.doc_label}] Extraction complete.")
         return ExtractionDoneEvent(
             doc_label=ev.doc_label,
             extracted_data=result,
@@ -355,10 +374,12 @@ class KYCWorkflow(Workflow):
         self, ctx: Context, ev: ExtractionDoneEvent
     ) -> ValidationDoneEvent | None:
         """Collect all 3 extraction results, then run Claude cross-validation."""
+        logger.info(f"Collected extraction result for '{ev.doc_label}', waiting for all 3...")
         results = ctx.collect_events(ev, [ExtractionDoneEvent] * 3)
         if results is None:
             return None
 
+        logger.info("All 3 extractions collected. Starting cross-document validation...")
         extraction_results = {r.doc_label: r.extracted_data for r in results}
 
         kyc_decision = await _validate_documents_with_llm(
@@ -367,6 +388,7 @@ class KYCWorkflow(Workflow):
             extraction_results["Bank Statement"],
         )
 
+        logger.info(f"Validation complete. Decision: {kyc_decision.decision}")
         return ValidationDoneEvent(
             kyc_decision=kyc_decision,
             extraction_results=extraction_results,
@@ -377,6 +399,7 @@ class KYCWorkflow(Workflow):
         self, ctx: Context, ev: ValidationDoneEvent
     ) -> StopEvent:
         """Return the final KYC decision and all extracted data."""
+        logger.info(f"=== KYC Workflow COMPLETE === Decision: {ev.kyc_decision.decision}")
         return StopEvent(
             result={
                 "decision": ev.kyc_decision.decision,

@@ -133,7 +133,7 @@ The lifecycle:
 
 ```bash
 # Install dependencies
-pip install boto3 llama-agents-agentcore[deploy]
+pip install boto3 llama-agents-agentcore
 
 # Deploy (replace with your role ARNs)
 python deploy.py deploy \
@@ -142,7 +142,10 @@ python deploy.py deploy \
   --region us-east-1
 
 # Invoke the deployed KYC workflow (payload is JSON)
-python deploy.py invoke '{"action": "run", "workflow": "kyc", "start_event": {"documents": [...]}}'
+python deploy.py invoke \
+    --gov-id sample_docs/drivers_license.pdf \
+    --utility-bill sample_docs/utility_bill.pdf \
+    --bank-statement sample_docs/bank_statement.pdf
 
 # Clean up
 python deploy.py destroy
@@ -179,7 +182,7 @@ documents = [
 
 resp = client.invoke_agent_runtime(
     agentRuntimeArn=arn,
-    runtimeSessionId="sess-001",
+    runtimeSessionId="1234-abcd-5678-efgh",
     payload=json.dumps({
         "action": "run",
         "workflow": "kyc",
