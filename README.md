@@ -1,143 +1,151 @@
-# Deploying a KYC Verification Workflow to AWS Bedrock AgentCore
+# KYC Verification Agent on AWS Bedrock AgentCore
 
-This demo shows how to deploy a LlamaIndex Workflow to AWS Bedrock AgentCore
-Runtime using the `llama-agents-agentcore` package, with full WorkflowServer
-capabilities exposed through a single AgentCore entrypoint.
+Deploy an AI-powered KYC (Know Your Customer) document verification agent to
+**AWS Bedrock AgentCore** in minutes. This demo shows how
+[LlamaIndex Workflows](https://developers.llamaindex.ai/python/llamaagents/workflows/)
+running on AgentCore can automate real-world compliance tasks — extracting
+structured data from identity documents and cross-validating them with Claude.
 
-The example workflow performs **KYC (Know Your Customer) document verification**:
-it extracts structured data from three identity documents in parallel using
-LlamaParse, then cross-validates names and addresses with Claude via Bedrock.
+## What It Does
 
-## What This Contains
-
-| File | Description |
-|------|-------------|
-| `workflow.py` | KYC verification workflow — LlamaParse extraction + Claude cross-validation |
-| `deploy.py` | Thin CLI wrapper around `AgentCoreDeployer` — deploy, invoke, destroy |
-| `customer-iam-role.yaml` | CloudFormation template for the required IAM roles |
-| `pyproject.toml` | Project dependencies and workflow registration |
-| `sample_docs/` | Sample KYC documents for local testing (driver's license, utility bill, bank statement) |
-
-## Architecture
+1. **Document Extraction** — Three identity documents (Government ID, Utility
+   Bill, Bank Statement) are processed *in parallel* through
+   [LlamaParse Extract](https://developers.llamaindex.ai/python/cloud/llamaextract/getting_started/)
+   to extract structured fields (name, address, account details).
+2. **Cross-Validation** — Claude (via Bedrock) compares names and addresses
+   across all three documents, handling abbreviations, formatting differences,
+   and name ordering.
+3. **KYC Decision** — Returns a structured **PASS / REVIEW / FAIL** verdict
+   with per-check reasoning.
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│  Client (boto3 invoke_agent_runtime)                                │
-│                                                                     │
-│  payload = {"action": "run", "workflow": "kyc",                     │
-│             "start_event": {"documents": [...]}}                    │
-└──────────────────────────┬──────────────────────────────────────────┘
-                           │
-                           ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│  AgentCore Runtime (container)                                      │
-│                                                                     │
-│  agentcore_entrypoint.py                                            │
-│    │                                                                │
-│    ├─ BedrockAgentCoreApp  ←  single @app.entrypoint                │
-│    │                                                                │
-│    └─ WorkflowServer  ←  programmatic (no internal HTTP)            │
-│         │                                                           │
-│         ├─ SqliteWorkflowStore( /mnt/workspace/workflows.db )       │
-│         │   └─ handlers, events, ticks, context state               │
-│         │                                                           │
-│         └─ Registered Workflows                                     │
-│              └─ workflow.py → KYCWorkflow                            │
-│                   ├─ start (fan-out 3 ExtractDocEvents)             │
-│                   ├─ extract_document ×3 (LlamaParse)               │
-│                   ├─ validate_documents (Claude via Bedrock)        │
-│                   └─ finalize → StopEvent with KYC decision         │
-│                                                                     │
-│  /mnt/workspace/  ← AgentCore session storage (survives stop/resume)│
-│    └─ workflows.db                                                  │
-└─────────────────────────────────────────────────────────────────────┘
+  Government ID ─┐
+  Utility Bill  ──┼─→ LlamaParse Extract (parallel) ─→ Claude Cross-Validation ─→ KYC Decision
+  Bank Statement ─┘
 ```
 
-### Translation Layer
+## Project Structure
 
-AgentCore exposes a single invoke function per runtime. The entrypoint
-translates an `"action"` field in the payload into the corresponding
-WorkflowServer operation:
-
-| Action | WorkflowServer Operation | Description |
-|--------|--------------------------|-------------|
-| `run` | `service.start_workflow()` + `await_workflow()` | Run workflow synchronously |
-| `run_nowait` | `service.start_workflow()` | Start workflow, return handler_id immediately |
-| `get_result` | `service.load_handler()` | Poll handler status and result |
-| `get_events` | `store.query_events()` | Retrieve recorded workflow events |
-| `send_event` | `service.send_event()` | Inject event into running workflow (human-in-the-loop) |
-| `cancel` | `service.cancel_handler()` | Cancel a running workflow |
-| `list_workflows` | `server.get_workflows()` | List registered workflow names |
-| `list_handlers` | `service.query_handlers()` | List handlers (filter by workflow/status) |
-| _(omitted)_ | Same as `run` | Just pass `start_event` |
+| File | Purpose |
+|------|---------|
+| `workflow.py` | KYC workflow — LlamaParse extraction + Claude validation |
+| `cli.py` | CLI to deploy, invoke, monitor, and tear down the agent |
+| `customer-iam-role.yaml` | CloudFormation template for required IAM roles |
+| `pyproject.toml` | Dependencies and workflow registration |
+| `sample_docs/` | Sample PDFs for testing (driver's license, utility bill, bank statement) |
 
 ## Prerequisites
 
-1. **AWS credentials** configured (`aws configure`)
-2. **IAM roles** created in the target account (see `customer-iam-role.yaml`):
-   - **Deployment Role** — used by CodeBuild to build/push containers to ECR
-   - **Execution Role** — used by the AgentCore Runtime at runtime (needs `bedrock:InvokeModel*` for Claude)
-3. **LlamaCloud API key** — set `LLAMA_CLOUD_API_KEY` (used by LlamaParse for document extraction)
-4. **Python 3.10+**
+- **Python 3.10+** with [uv](https://docs.astral.sh/uv/) (or pip)
+- **AWS credentials** configured (`aws configure` or environment variables)
+- **IAM roles** from `customer-iam-role.yaml` deployed to the target account
+- **LlamaCloud API key** — set `LLAMA_CLOUD_API_KEY` in `.env` (used by LlamaParse)
 
 ## Quick Start
 
 ```bash
 # Install dependencies
-pip install boto3 llama-agents-agentcore
+uv sync
 
-# Deploy (replace with your role ARNs)
-python deploy.py deploy \
+# Deploy to AgentCore
+python cli.py deploy \
   --deployment-role arn:aws:iam::123456789012:role/AgentCoreDeployRole \
-  --execution-role arn:aws:iam::123456789012:role/AgentCoreExecutionRole \
-  --region us-east-1
+  --execution-role arn:aws:iam::123456789012:role/AgentCoreExecutionRole
 
-# Invoke the deployed KYC workflow (payload is JSON)
-python deploy.py invoke \
-    --gov-id sample_docs/drivers_license.pdf \
-    --utility-bill sample_docs/utility_bill.pdf \
-    --bank-statement sample_docs/bank_statement.pdf
+# Run KYC verification
+python cli.py invoke \
+  --gov-id sample_docs/drivers_license.pdf \
+  --utility-bill sample_docs/utility_bill.pdf \
+  --bank-statement sample_docs/bank_statement.pdf
 
-# Clean up
-python deploy.py destroy
+# Tear down
+python cli.py destroy
 ```
+
+## CLI Reference
+
+All commands except `deploy` and `destroy` support `--local` to target a local
+runtime at `localhost:8080` instead of the deployed agent.
+
+| Command | Description |
+|---------|-------------|
+| `deploy` | Build container, push to ECR, create AgentCore Runtime |
+| `invoke` | Run KYC workflow with document files |
+| `status --handler-id ID` | Check handler status and result |
+| `events --handler-id ID` | Retrieve recorded workflow events |
+| `send-event --handler-id ID --event '{...}'` | Inject event into running workflow (human-in-the-loop) |
+| `cancel --handler-id ID` | Cancel a running handler |
+| `workflows` | List registered workflows |
+| `handlers` | List all handlers (filter with `--workflow`, `--status`) |
+| `destroy` | Tear down deployment and clean up AWS resources |
+
+### Async workflow + polling
+
+```bash
+# Start without waiting
+python cli.py invoke --no-wait \
+  --gov-id sample_docs/drivers_license.pdf \
+  --utility-bill sample_docs/utility_bill.pdf \
+  --bank-statement sample_docs/bank_statement.pdf
+
+# Poll for result
+python cli.py status --handler-id <SESSION_ID>
+```
+
+## Architecture
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│  cli.py  (or boto3 invoke_agent_runtime)                     │
+└──────────────────────────┬───────────────────────────────────┘
+                           │
+                           ▼
+┌──────────────────────────────────────────────────────────────┐
+│  AgentCore Runtime (container)                               │
+│                                                              │
+│  BedrockAgentCoreApp  ←  single @app.entrypoint              │
+│    │                                                         │
+│    └─ AgentCoreService (WorkflowServer, SQLite store)        │
+│         │                                                    │
+│         └─ KYCWorkflow                                       │
+│              ├─ start (fan-out 3 ExtractDocEvents)           │
+│              ├─ extract_document ×3 (LlamaParse)             │
+│              ├─ validate_documents (Claude via Bedrock)       │
+│              └─ finalize → StopEvent with KYC decision       │
+│                                                              │
+│  /mnt/workspace/workflows.db  ← durable session storage     │
+└──────────────────────────────────────────────────────────────┘
+```
+
+**Key points:**
+
+- The `deploy` command builds the container with CodeBuild and deploys to AgentCore using the specified IAM roles.
+- AgentCore exposes a single invoke endpoint per runtime. An `"action"` field in the payload routes to operations like `run`, `get_result`, `send_event`, etc.
+- `context.session_id` is used as the default handler ID — re-invoking the same session returns cached results (completed), awaits (running), or starts fresh.
+- SQLite state persists across session stop/resume via AgentCore session storage.
 
 ## Local Testing
 
-You can run the KYC workflow locally without deploying to AgentCore:
+Run the workflow locally without deploying to AgentCore:
 
 ```bash
-# Requires LLAMA_CLOUD_API_KEY and AWS credentials (for Bedrock)
+# Requires LLAMA_CLOUD_API_KEY and AWS credentials (for Bedrock Claude)
 python workflow.py
 ```
 
-This uses the sample documents in `sample_docs/` and prints the KYC decision
-with all cross-document checks.
+Uses the sample documents in `sample_docs/` and prints the KYC decision.
 
-## Using AgentCoreDeployer Directly
+You can also launch the local AgentCore Runtime for testing:
 
-```python
-import boto3
-from llama_agents.agentcore.deploy import AgentCoreDeployer
-
-deployer = AgentCoreDeployer(
-    session=boto3.Session(region_name="us-east-1"),
-    deployment_role="arn:aws:iam::123456789012:role/AgentCoreDeployRole",
-    execution_role="arn:aws:iam::123456789012:role/AgentCoreExecutionRole",
-)
-
-# Deploy — builds container, pushes to ECR, creates AgentCore Runtime
-runtime = deployer.deploy(project_dir=".")
-
-# Invoke
-result = deployer.invoke(runtime.arn, {
-    "action": "run",
-    "workflow": "kyc",
-    "start_event": {"documents": [...]},
-})
-print(result)
-
-# Tear down
-deployer.destroy_from_metadata(runtime)
+```bash
+uv run python -m llama_agents.agentcore.main --local
 ```
 
+Then, you can call the CLI with `--local` to target the local runtime.
+
+## IAM Roles
+
+Deploy the CloudFormation stack in `customer-iam-role.yaml` to create:
+
+- **Deployment Role** — used by CodeBuild to build and push containers to ECR
+- **Execution Role** — assumed by the AgentCore Runtime (needs `bedrock:InvokeModel*` for Claude)

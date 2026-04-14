@@ -122,13 +122,18 @@ Resources:
           PolicyDocument:
             Version: "2012-10-17"
             Statement:
-              # Bedrock: Invoke foundation models
+              # Bedrock: Invoke foundation models and inference profiles
               - Sid: BedrockModelAccess
                 Effect: Allow
                 Action:
                   - bedrock:InvokeModel
                   - bedrock:InvokeModelWithResponseStream
-                Resource: arn:aws:bedrock:*::foundation-model/*
+                  - bedrock:GetFoundationModel
+                  - bedrock:GetInferenceProfile
+                Resource:
+                  - arn:aws:bedrock:*::foundation-model/*
+                  - arn:aws:bedrock:*:*:inference-profile/*
+                  - arn:aws:bedrock:*:*:application-inference-profile/*
 
               # ECR: Pull container images
               - Sid: ECRPullAccess
@@ -140,18 +145,23 @@ Resources:
                   - ecr:BatchCheckLayerAvailability
                 Resource: "*"
 
-              # CloudWatch: Write runtime logs
-              - Sid: CloudWatchLogs
+              # CloudWatch: Describe and create log groups
+              - Sid: CloudWatchLogGroups
                 Effect: Allow
                 Action:
+                  - logs:DescribeLogGroups
                   - logs:CreateLogGroup
+                Resource: arn:aws:logs:*:*:log-group:*
+
+              # CloudWatch: Write runtime log streams
+              - Sid: CloudWatchLogStreams
+                Effect: Allow
+                Action:
                   - logs:CreateLogStream
                   - logs:PutLogEvents
-                  - logs:DescribeLogGroups
                 Resource:
-                  - arn:aws:logs:*:*:log-group:/aws/bedrock-agentcore/*
-                  - arn:aws:logs:*:*:log-group:otel-rt-logs*
-                  - arn:aws:logs:*:*:log-group:otel-rt-logs*:*
+                  - arn:aws:logs:*:*:log-group:/aws/bedrock-agentcore/*:log-stream:*
+                  - arn:aws:logs:*:*:log-group:otel-rt-logs*:log-stream:*
 
               # S3: Log delivery
               - Sid: S3LogDelivery

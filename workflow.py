@@ -15,12 +15,16 @@ import asyncio
 import base64
 import json
 import logging
+import sys
 from typing import Literal
 
-logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
+handler = logging.StreamHandler(sys.stdout)
+handler.setFormatter(logging.Formatter('%(asctime)s %(levelname)s %(message)s'))
+logger = logging.getLogger()
+logger.addHandler(handler)
+logger.setLevel(logging.INFO)
 
-import aioboto3
+import boto3
 from llama_cloud import AsyncLlamaCloud
 from pydantic import BaseModel, Field
 
@@ -148,7 +152,7 @@ class ExtractDocEvent(Event):
     """Request to extract a single document."""
 
     doc_label: str
-    file_data: bytes
+    file_data_b64: str
     file_name: str
 
 
@@ -236,8 +240,6 @@ async def _validate_documents_with_llm(
     stmt_data: dict,
 ) -> KYCDecision:
     """Use Claude via Bedrock Converse to compare identity fields across documents."""
-    session = aioboto3.Session()
-
     logger.info("Starting cross-document validation with Claude via Bedrock...")
 
     prompt = f"""You are a KYC compliance analyst. Compare the extracted data from three
@@ -268,26 +270,27 @@ Then decide:
 
     # Use tool-use to enforce structured output matching KYCDecision schema
     tool_name = "kyc_decision"
-    async with session.client("bedrock-runtime") as client:
-        response = await client.converse(
-            modelId=BEDROCK_MODEL_ID,
-            messages=[{"role": "user", "content": [{"text": prompt}]}],
-            inferenceConfig={"maxTokens": 4096},
-            toolConfig={
-                "tools": [
-                    {
-                        "toolSpec": {
-                            "name": tool_name,
-                            "description": "Record the KYC verification decision with all cross-document comparisons.",
-                            "inputSchema": {
-                                "json": KYCDecision.model_json_schema()
-                            },
-                        }
+    client = boto3.client("bedrock-runtime")
+    response = await asyncio.to_thread(
+        client.converse,
+        modelId=BEDROCK_MODEL_ID,
+        messages=[{"role": "user", "content": [{"text": prompt}]}],
+        inferenceConfig={"maxTokens": 4096},
+        toolConfig={
+            "tools": [
+                {
+                    "toolSpec": {
+                        "name": tool_name,
+                        "description": "Record the KYC verification decision with all cross-document comparisons.",
+                        "inputSchema": {
+                            "json": KYCDecision.model_json_schema()
+                        },
                     }
-                ],
-                "toolChoice": {"tool": {"name": tool_name}},
-            },
-        )
+                }
+            ],
+            "toolChoice": {"tool": {"name": tool_name}},
+        },
+    )
 
     logger.info("Received Bedrock response, parsing KYC decision...")
     # Extract the tool use input from the response
@@ -342,10 +345,9 @@ class KYCWorkflow(Workflow):
         logger.info("Fanning out extraction requests for all documents...")
         for doc in documents:
             label = DOC_TYPE_LABELS[doc.doc_type]
-            file_bytes = base64.b64decode(doc.file_b64)
             ctx.send_event(
                 ExtractDocEvent(
-                    doc_label=label, file_data=file_bytes, file_name=doc.file_name
+                    doc_label=label, file_data_b64=doc.file_b64, file_name=doc.file_name
                 )
             )
 
@@ -357,9 +359,10 @@ class KYCWorkflow(Workflow):
         logger.info(f"[{ev.doc_label}] Starting extraction for '{ev.file_name}'...")
         schema_class = DOC_SCHEMAS[ev.doc_label]
         client = AsyncLlamaCloud()
+        file_bytes = base64.b64decode(ev.file_data_b64)
 
         result, metadata = await _extract_document(
-            client, ev.file_data, ev.file_name, schema_class, ev.doc_label
+            client, file_bytes, ev.file_name, schema_class, ev.doc_label
         )
 
         logger.info(f"[{ev.doc_label}] Extraction complete.")
