@@ -17,7 +17,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "llama-agents-agentcore", specifier = ">=0.8.17" },
+    { name = "llama-agents-agentcore", specifier = "==0.8.16" },
     { name = "llama-agents-server", specifier = ">=0.4.4" },
     { name = "llama-cloud", specifier = ">=2.1" },
     { name = "llama-index-workflows", specifier = ">=0.1.0" },
@@ -240,7 +240,7 @@ wheels = [
 
 [[package]]
 name = "llama-agents-agentcore"
-version = "0.8.17"
+version = "0.8.16"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "bedrock-agentcore" },
@@ -250,9 +250,9 @@ dependencies = [
     { name = "llama-agents-core" },
     { name = "llama-agents-server" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/e9/a4/4fdfa1ce7b3f2a57deaa02b7609f1aa9e78be50634f3211b937f80a1b6c0/llama_agents_agentcore-0.8.17.tar.gz", hash = "sha256:823b295d166eeec4d18cd6b19be2d1e05da46e56c75091b8c46b8826f8e03d37", size = 19011, upload-time = "2026-04-13T22:54:34.152Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/6c/cb/ea613bc87e32c495cc319f339fe4ea9bea2a710a3eb106d0106b76bbf132/llama_agents_agentcore-0.8.16.tar.gz", hash = "sha256:0969e905e9a0929c7a231681e8b44385b6564176858b45ebf0433b88919aa3d5", size = 18938, upload-time = "2026-04-10T22:07:16.39Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/0f/1f/841edebecb55bb1b11e26b00f248f512545f5c6968c8ed6a14837c809183/llama_agents_agentcore-0.8.17-py3-none-any.whl", hash = "sha256:bb1bea516b59c1148e65f9914f6bd0521995c9bd3cbac59bb6ca777550386630", size = 24502, upload-time = "2026-04-13T22:54:35.202Z" },
+    { url = "https://files.pythonhosted.org/packages/33/af/b53b2816a15f445e3be6ea69c7ca731d9894f2354c05eadeed9fcd930c52/llama_agents_agentcore-0.8.16-py3-none-any.whl", hash = "sha256:711a6fee5d4d5a9feae89275d4a4cb111ae97d5fd2d8fb6f258a913d67169ee3", size = 24460, upload-time = "2026-04-10T22:07:15.309Z" },
 ]
 
 [[package]]

@@ -71,6 +71,31 @@ def _invoke(args: argparse.Namespace, payload: dict) -> dict:
     return deployer.invoke(meta.arn, payload, session_id=session_id)
 
 
+def _decode_result(data: dict) -> dict:
+    """Deserialize the nested pydantic/envelope result using JsonSerializer."""
+    raw = data.get("result")
+    if not raw or not isinstance(raw, str):
+        return data
+
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return data
+
+    from workflows.context.serializers import JsonSerializer
+
+    deserialized = JsonSerializer().deserialize_value(parsed)
+
+    # deserialized is an EventEnvelopeWithMetadata; extract the inner event value
+    if hasattr(deserialized, "value"):
+        result = deserialized.value
+    else:
+        result = deserialized
+
+    data = {**data, "result": result}
+    return data
+
+
 def _print_json(data: dict) -> None:
     print(json.dumps(data, indent=2))
 
@@ -132,7 +157,7 @@ def cmd_invoke(args: argparse.Namespace) -> None:
         payload["workflow"] = args.workflow
 
     result = _invoke(args, payload)
-    _print_json(result)
+    _print_json(_decode_result(result))
     print(f"\nSession ID: {session_id}")
     print(f"  Re-use with: --session-id {session_id}")
 
@@ -145,7 +170,7 @@ def cmd_status(args: argparse.Namespace) -> None:
         "action": "get_result",
         "handler_id": args.handler_id,
     }
-    _print_json(_invoke(args, payload))
+    _print_json(_decode_result(_invoke(args, payload)))
 
 
 def cmd_events(args: argparse.Namespace) -> None:
