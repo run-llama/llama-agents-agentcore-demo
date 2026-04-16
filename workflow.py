@@ -335,6 +335,20 @@ class KYCWorkflow(Workflow):
 
         documents = [KYCDocument.model_validate(d) for d in raw_docs]
 
+        # --- Alternative: read files from S3 instead of base64 on the event ---
+        # Expected StartEvent fields when using S3:
+        #     documents: list[dict] - each with s3_bucket, s3_key, file_name, doc_type
+        #
+        # s3 = boto3.client("s3")
+        # for doc in documents:
+        #     s3_bucket = doc.get("s3_bucket")
+        #     s3_key = doc.get("s3_key")
+        #     logger.info(f"Downloading s3://{s3_bucket}/{s3_key}...")
+        #     s3_obj = s3.get_object(Bucket=s3_bucket, Key=s3_key)
+        #     file_bytes = s3_obj["Body"].read()
+        #     doc["file_b64"] = base64.b64encode(file_bytes).decode()
+        # ---
+
         logger.info(f"Validated {len(documents)} documents: {[d.doc_type for d in documents]}")
 
         provided_types = {d.doc_type for d in documents}
