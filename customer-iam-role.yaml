@@ -150,6 +150,7 @@ Resources:
                 Effect: Allow
                 Action:
                   - logs:DescribeLogGroups
+                  - logs:DescribeLogStreams
                   - logs:CreateLogGroup
                 Resource: arn:aws:logs:*:*:log-group:*
 
